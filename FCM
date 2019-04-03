@@ -1,0 +1,232 @@
+Imports System
+Imports System.IO
+Imports System.Text
+Imports System.Web.Script.Serialization
+Imports Microsoft.VisualBasic
+Imports System.Data
+Imports System.Xml
+Imports Newtonsoft.Json
+
+Public Class Queue
+    Public Enum DeviceTypes
+        Android = 1
+        IOS = 2
+        Windows = 3
+    End Enum
+    Public Enum TicketStatuses
+        NonProducible = -1
+        PendingProduction = 0
+        Produced = 1
+        InTransit = 2
+        Unsuccessful = 3
+        Successful = 4
+    End Enum
+    Private mQueueID As Integer
+    Public Property QueueID() As Integer
+        Get
+            Return mQueueID
+        End Get
+        Set(ByVal value As Integer)
+            mQueueID = value
+        End Set
+    End Property
+    Private mFCMToken As String
+    Public Property FCMToken() As String
+        Get
+            Return mFCMToken
+        End Get
+        Set(ByVal value As String)
+            mFCMToken = value
+        End Set
+    End Property
+    Private mDeviceType As DeviceTypes
+    Public Property DeviceType() As DeviceTypes
+        Get
+            Return mDeviceType
+        End Get
+        Set(ByVal value As DeviceTypes)
+            mDeviceType = value
+        End Set
+    End Property
+    Private mTicketNumber As String
+    Public Property TicketNumber() As String
+        Get
+            Return mTicketNumber
+        End Get
+        Set(ByVal value As String)
+            mTicketNumber = value
+        End Set
+    End Property
+    Private mTicketJSON As String
+    Public Property TicketJSON() As String
+        Get
+            Return mTicketJSON
+        End Get
+        Set(ByVal value As String)
+            mTicketJSON = value
+        End Set
+    End Property
+    Private mTicketStatus As TicketStatuses
+    Public Property TicketStatus() As TicketStatuses
+        Get
+            Return mTicketStatus
+        End Get
+        Set(ByVal value As TicketStatuses)
+            mTicketStatus = value
+        End Set
+    End Property
+    Private mMessageBody As String
+    Public Property MessageBody() As String
+        Get
+            Return mMessageBody
+        End Get
+        Set(ByVal value As String)
+            mMessageBody = value
+        End Set
+    End Property
+    Public Sub New(drow As DataRow)
+        Try
+            If drow.Table.Columns.Contains("QueueID") Then
+                If (drow("QueueID") IsNot DBNull.Value) Then mQueueID = Convert.ToInt32(drow("QueueID"))
+            End If
+            If drow.Table.Columns.Contains("FCMToken") Then
+                If (drow("FCMToken") IsNot DBNull.Value) Then mFCMToken = drow("FCMToken")
+            End If
+            If drow.Table.Columns.Contains("DeviceType") Then
+                If (drow("DeviceType") IsNot DBNull.Value) Then mDeviceType = Convert.ToInt32(drow("DeviceType"))
+            End If
+            If drow.Table.Columns.Contains("TicketNumber") Then
+                If (drow("TicketNumber") IsNot DBNull.Value) Then mTicketNumber = drow("TicketNumber")
+            End If
+            If drow.Table.Columns.Contains("TicketJSON") Then
+                If (drow("TicketJSON") IsNot DBNull.Value) Then mTicketJSON = drow("TicketJSON")
+            End If
+            If drow.Table.Columns.Contains("TicketStatus") Then
+                If (drow("TicketStatus") IsNot DBNull.Value) Then mTicketStatus = Convert.ToInt32(drow("TicketStatus"))
+            End If
+        Catch ex As Exception
+
+        End Try
+    End Sub
+    Public Shared Sub SearchQueuedTicket(ByVal TicketNumber As String)
+        Try
+            Dim ds, responseds As DataSet
+            Dim objQueue As Queue
+            Dim objDBManager As New DBManager
+            objDBManager.AddParameter("@TicketNumber", TicketNumber, SqlDbType.NVarChar, 20)
+            ds = objDBManager.ExecuteDataSet("SearchTicketInQueue")
+            If ds IsNot Nothing AndAlso ds.Tables(0).Rows.Count > 0 Then
+                objQueue = New Queue(ds.Tables(0).Rows(0))
+                AddMessageBody(objQueue)
+                responseds = FCMSender.SendNotification(objQueue)
+                If responseds IsNot Nothing AndAlso responseds.Tables(0).Rows.Count > 0 Then
+                    InsertResponse(responseds, objQueue)
+                End If
+            End If
+        Catch ex As Exception
+        End Try
+    End Sub
+    Private Shared Sub AddMessageBody(ByRef objQueue As Queue)
+        Try
+            If objQueue.TicketStatus = TicketStatuses.PendingProduction Then
+                objQueue.MessageBody = "Ticket Number : " & objQueue.TicketNumber & " Has been Marked as Pending Production"
+            ElseIf objQueue.TicketStatus = TicketStatuses.Produced Then
+                objQueue.MessageBody = "Ticket Number : " & objQueue.TicketNumber & " Has been Marked as Pending Delivery"
+            ElseIf objQueue.TicketStatus = TicketStatuses.InTransit Then
+                objQueue.MessageBody = "Ticket Number : " & objQueue.TicketNumber & " Has been Marked as In-Transit"
+            ElseIf objQueue.TicketStatus = TicketStatuses.Successful Then
+                objQueue.MessageBody = "Ticket Number : " & objQueue.TicketNumber & " Has been Marked as Successful"
+            ElseIf objQueue.TicketStatus = TicketStatuses.Unsuccessful Then
+                objQueue.MessageBody = "Ticket Number : " & objQueue.TicketNumber & " Has been Marked as Unsuccessful"
+            End If
+        Catch ex As Exception
+        End Try
+    End Sub
+    Private Shared Sub InsertResponse(ByVal ds As DataSet, ByVal objQueue As Queue)
+        Try
+            'InsertNotificationAndResponse
+            If ds IsNot Nothing AndAlso ds.Tables.Count > 0 Then
+                Dim str As String = String.Empty
+                Dim objDBManager As DBManager
+                objDBManager = New DBManager
+                objDBManager.AddParameter("@QueueID", objQueue.QueueID, SqlDbType.Int, 4)
+                objDBManager.AddParameter("@MessageBody", objQueue.MessageBody, SqlDbType.NVarChar, 200)
+                objDBManager.AddParameter("@Result", CType(ds.Tables(0).Rows(0)("success"), Boolean), SqlDbType.Bit, 1)
+                objDBManager.AddParameter("@Response", ToStringAsXml(ds), SqlDbType.NVarChar, 500)
+                objDBManager.ExecuteNonQuery("InsertNotificationAndResponse")
+            End If
+
+        Catch ex As Exception
+
+        End Try
+    End Sub
+    Public Shared Function ToStringAsXml(ds As DataSet) As String
+        Dim sw As New StringWriter()
+        ds.WriteXml(sw, XmlWriteMode.IgnoreSchema)
+        Dim s As String = sw.ToString()
+        Return s
+    End Function
+End Class
+
+Public Class FCMSender
+
+    Public Shared Function SendNotification(ByVal objQueue As Queue) As DataSet
+        Dim response As String
+        Dim ds As DataSet = New DataSet()
+        Try
+            Dim body As String = objQueue.MessageBody
+
+            Dim notificationRequest As System.Net.WebRequest = System.Net.WebRequest.Create("https://fcm.googleapis.com/fcm/send")
+            notificationRequest.Method = "post"
+            notificationRequest.ContentType = "application/json"
+            Dim data As Object
+            Dim keyValue As String = "content-available"
+            If objQueue.DeviceType = Queue.DeviceTypes.Android Then
+                data = New With {Key .[to] = IIf(objQueue.FCMToken <> String.Empty, objQueue.FCMToken, Configurations.Topic), Key .data = New With {Key .body = body, Key .title = Configurations.NotificationTitle, Key .priority = "high", Key .TicketNumber = objQueue.TicketNumber, Key .TicketStatus = objQueue.TicketStatus, Key .content_available = 1}}
+            Else
+                data = New With {Key .[to] = IIf(objQueue.FCMToken <> String.Empty, objQueue.FCMToken, Configurations.Topic), Key .notification = New With {Key .body = body, Key .title = Configurations.NotificationTitle, Key .priority = "high", Key .TicketNumber = objQueue.TicketNumber, Key .TicketStatus = objQueue.TicketStatus, Key .content_available = True}}
+            End If
+            Dim serializer As New JavaScriptSerializer()
+            Dim json As String = serializer.Serialize(data)
+            Dim byteArray As Byte() = Encoding.UTF8.GetBytes(json)
+            notificationRequest.Headers.Add(String.Format("Authorization: key={0}", Configurations.ServerKey))
+            notificationRequest.Headers.Add(String.Format("Sender: id={0}", Configurations.SenderID))
+            notificationRequest.ContentLength = byteArray.Length
+            Using dataStream As Stream = notificationRequest.GetRequestStream()
+                dataStream.Write(byteArray, 0, byteArray.Length)
+                Using tResponse As System.Net.WebResponse = notificationRequest.GetResponse()
+                    Using dataStreamResponse As Stream = tResponse.GetResponseStream()
+                        Using tReader As StreamReader = New StreamReader(dataStreamResponse)
+                            Dim sResponseFromServer As String = tReader.ReadToEnd()
+                            response = sResponseFromServer
+                        End Using
+                    End Using
+                End Using
+            End Using
+            ds = ReadDataFromJson(response)
+            Return ds
+        Catch ex As System.Exception
+            Return Nothing
+            'response = ex.Message
+        End Try
+    End Function
+
+    Public Shared Function ReadDataFromJson(ByVal jsonString As String) As DataSet
+        Dim xd = New XmlDocument()
+        jsonString = "{ ""rootNode"": {" & jsonString.Trim().TrimStart("{"c).TrimEnd("}"c) & "} }"
+        xd = JsonConvert.DeserializeXmlNode(jsonString)
+        Dim result As DataSet = New DataSet()
+        result.ReadXml(New XmlNodeReader(xd))
+        Return result
+    End Function
+
+    Public Shared Function ReadJsonString(ByVal jsonString As String) As DataSet
+        Try
+            Dim d As Object = JsonConvert.DeserializeObject(jsonString)
+            Return Nothing
+        Catch ex As Exception
+            Return Nothing
+        End Try
+    End Function
+
+End Class
